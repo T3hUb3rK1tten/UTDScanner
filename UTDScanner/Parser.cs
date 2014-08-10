@@ -3,7 +3,6 @@ using iTextSharp.text.pdf;
 using iTextSharp.text.pdf.parser;
 using System;
 using System.Collections.Generic;
-using System.Data.SQLite;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -12,10 +11,10 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Linq.Expressions;
-using Renci.SshNet;
 using System.Net;
 using System.Collections.Specialized;
 using System.Globalization;
+using System.Data.SqlClient;
 
 
 namespace UTDScanner
@@ -107,6 +106,11 @@ namespace UTDScanner
             Console.WriteLine("Downloading finished, " + modifiedfiles.Count + " modified files to parse");
 
             #endregion
+
+            if (modifiedfiles.Count == 0)
+            {
+                return;
+            }
 
             #region Parse
 
@@ -205,6 +209,9 @@ namespace UTDScanner
                         else if (pageline.IsMatch(line))
                         {
                             notes = false;
+
+                            Debug.Assert(String.IsNullOrEmpty(currentIncident.Location) == false);
+
                             incidents.Add(currentIncident);
                         }
                         else if (line.StartsWith("Notes: ", StringComparison.CurrentCultureIgnoreCase))
@@ -239,7 +246,12 @@ namespace UTDScanner
 
             #endregion
 
-            using (var db = new SQLiteConnection("Data Source = " + Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "database.s3db")))
+            if (incidents.Count == 0)
+            {
+                return;
+            }
+
+            using (var db = new SqlConnection(Properties.Settings.Default.DefaultConnection))
             {
                 db.Open();
 
@@ -247,54 +259,52 @@ namespace UTDScanner
 
                 if (incidents.Count != 0)
                 {
-                    var begin = new SQLiteCommand("BEGIN TRANSACTION", db);
-                    begin.ExecuteNonQuery();
-
-                    var cmd = new SQLiteCommand(db);
-                    cmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE CaseNumber = @casenumber AND InternalReferenceNumber = @internalreferencenumber";
-
-                    var insert = new SQLiteCommand(db);
-                    insert.CommandText = "INSERT INTO Incidents (Type, Location, Reported, OccurredStart, OccurredStop, CaseNumber, InternalReferenceNumber, Disposition, Notes)" +
-                        "VALUES (@type, @location, @reported, @occurredstart, @occurredstop, @casenumber, @internalreferencenumber, @disposition, @notes);";
-
-                    foreach (var incident in incidents)
+                    using (var trans = db.BeginTransaction())
                     {
-                        // This will cause a lot of table scans. Oh well.
-                        cmd.Parameters.Clear();
-                        cmd.Parameters.AddWithValue("@casenumber", incident.CaseNumber);
-                        cmd.Parameters.AddWithValue("@internalreferencenumber", incident.InternalReferenceNumber);
-                        int count = Convert.ToInt32(cmd.ExecuteScalar());
+                        var cmd = db.CreateCommand();
+                        cmd.Transaction = trans;
+                        cmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE CaseNumber = @casenumber AND InternalReferenceNumber = @internalreferencenumber";
 
-                        if (count == 0)
+                        var insert = db.CreateCommand();
+                        insert.Transaction = trans;
+                        insert.CommandText = "INSERT INTO Incidents (Type, Location, Reported, OccurredStart, OccurredStop, CaseNumber, InternalReferenceNumber, Disposition, Notes)" +
+                            "VALUES (@type, @location, @reported, @occurredstart, @occurredstop, @casenumber, @internalreferencenumber, @disposition, @notes);";
+
+                        foreach (var incident in incidents)
                         {
-                            Console.WriteLine("Inserting incident " + incident.CaseNumber + " " + incident.InternalReferenceNumber);
+                            // This will cause a lot of table scans. Oh well.
+                            cmd.Parameters.Clear();
+                            cmd.Parameters.AddWithValue("@casenumber", incident.CaseNumber);
+                            cmd.Parameters.AddWithValue("@internalreferencenumber", incident.InternalReferenceNumber);
+                            int count = Convert.ToInt32(cmd.ExecuteScalar());
 
-                            // Insert
-                            insert.Parameters.Clear();
-                            insert.Parameters.AddWithValue("@Type", incident.Type);
-                            insert.Parameters.AddWithValue("@Location", incident.Location);
-                            insert.Parameters.AddWithValue("@Reported", (incident.Reported == DateTime.MinValue ? (object)DBNull.Value : incident.Reported));
-                            insert.Parameters.AddWithValue("@OccurredStart", (incident.OccurredStart == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStart));
-                            insert.Parameters.AddWithValue("@OccurredStop", (incident.OccurredStop == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStop));
-                            insert.Parameters.AddWithValue("@CaseNumber", incident.CaseNumber);
-                            insert.Parameters.AddWithValue("@InternalReferenceNumber", incident.InternalReferenceNumber);
-                            insert.Parameters.AddWithValue("@Disposition", incident.Disposition);
-                            insert.Parameters.AddWithValue("@Notes", incident.Notes);
+                            if (count == 0)
+                            {
+                                Console.WriteLine("Inserting incident " + incident.CaseNumber + " " + incident.InternalReferenceNumber);
 
-                            int rows = insert.ExecuteNonQuery();
-                            Debug.Assert(rows == 1);
+                                // Insert
+                                insert.Parameters.Clear();
+                                insert.Parameters.AddWithValue("@Type", incident.Type);
+                                insert.Parameters.AddWithValue("@Location", (String.IsNullOrEmpty(incident.Location) ? (object)DBNull.Value : incident.Location));
+                                insert.Parameters.AddWithValue("@Reported", (incident.Reported == DateTime.MinValue ? (object)DBNull.Value : incident.Reported));
+                                insert.Parameters.AddWithValue("@OccurredStart", (incident.OccurredStart == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStart));
+                                insert.Parameters.AddWithValue("@OccurredStop", (incident.OccurredStop == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStop));
+                                insert.Parameters.AddWithValue("@CaseNumber", incident.CaseNumber);
+                                insert.Parameters.AddWithValue("@InternalReferenceNumber", incident.InternalReferenceNumber);
+                                insert.Parameters.AddWithValue("@Disposition", incident.Disposition);
+                                insert.Parameters.AddWithValue("@Notes", incident.Notes);
+
+                                int rows = insert.ExecuteNonQuery();
+                                Debug.Assert(rows == 1);
+                            }
                         }
-                    }
-                    var end = new SQLiteCommand("END TRANSACTION", db);
-                    end.ExecuteNonQuery();
 
-                    begin.Dispose();
-                    cmd.Dispose();
-                    insert.Dispose();
-                    end.Dispose();
+                        cmd.Dispose();
+                        insert.Dispose();
+                    }
                 }
 
-                using (var numSentStatusesCmd = new SQLiteCommand(db))
+                using (var numSentStatusesCmd = db.CreateCommand())
                 {
                     numSentStatusesCmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE SharedOnBuffer = 1";
                     int numSentStatuses = Convert.ToInt32(numSentStatusesCmd.ExecuteScalar());
@@ -303,8 +313,9 @@ namespace UTDScanner
                         // Probably a freshly loaded database
                         // Avoid sending thousands of tweets for old incidents
                         Console.WriteLine("Setting SharedOnBuffer = 1 for all Incidents");
-                        using (var update = new SQLiteCommand("UPDATE Incidents SET SharedOnBuffer = 1", db))
+                        using (var update = db.CreateCommand())
                         {
+                            update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1";
                             update.ExecuteNonQuery();
                         }
                     }
@@ -317,18 +328,18 @@ namespace UTDScanner
 
                 foreach (var filename in modifiedfiles)
                 {
-                    var localfile = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), filename);
+                    var localfile = new FileInfo(filename);
                     var exists = false;
 
-                    using (var cmd = new SQLiteCommand(db))
+                    using (var cmd = db.CreateCommand())
                     {
                         cmd.CommandText = "SELECT COUNT(1) FROM Files WHERE Name = @name";
-                        cmd.Parameters.AddWithValue("name", filename);
+                        cmd.Parameters.AddWithValue("name", localfile.Name);
 
                         exists = Convert.ToBoolean(cmd.ExecuteScalar());
                     }
 
-                    using (var cmd = new SQLiteCommand(db))
+                    using (var cmd = db.CreateCommand())
                     {
                         if (exists)
                         {
@@ -339,7 +350,7 @@ namespace UTDScanner
                             cmd.CommandText = "INSERT INTO Files (Name, LastModified) VALUES (@name, @lastmodified)";
                         }
                         cmd.Parameters.AddWithValue("name", filename);
-                        cmd.Parameters.AddWithValue("lastmodified", File.GetLastWriteTime(localfile));
+                        cmd.Parameters.AddWithValue("lastmodified", localfile.LastWriteTime);
 
                         var rows = cmd.ExecuteNonQuery();
                         Debug.Assert(rows == 1);
@@ -350,10 +361,10 @@ namespace UTDScanner
 
                 #region Post
 
-                using (var getToShare = new SQLiteCommand(db))
+                using (var getToShare = db.CreateCommand())
                 {
-                    getToShare.CommandText = "SELECT Id, CaseNumber, InternalReferenceNumber, Type, Location, Reported, OccurredStart, OccurredStart, Disposition, Notes, Location, Latitude, Longitude, FacebookPageId " +
-                        "FROM IncidentsView WHERE SharedOnBuffer = 0 ORDER BY Reported ASC LIMIT 10";
+                    getToShare.CommandText = "SELECT TOP 10 Id, CaseNumber, InternalReferenceNumber, Type, Location, Reported, OccurredStart, OccurredStart, Disposition, Notes, Location, Latitude, Longitude, FacebookPageId " +
+                        "FROM IncidentsView WHERE SharedOnBuffer = 0 ORDER BY Reported ASC";
 
                     using (var reader = getToShare.ExecuteReader())
                     {
@@ -422,7 +433,7 @@ namespace UTDScanner
                                     var json = Encoding.UTF8.GetString(response);
                                     if (Regex.IsMatch(json, @"success["" :]*true")) // lol
                                     {
-                                        using (var update = new SQLiteCommand(db))
+                                        using (var update = db.CreateCommand())
                                         {
                                             update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
                                             update.Parameters.AddWithValue("id", reader["Id"]);
@@ -436,6 +447,7 @@ namespace UTDScanner
                                     if (ex.Message.Contains("400"))
                                     {
                                         Console.WriteLine("Reached Buffer limit? " + ex.Message);
+                                        break;
                                     }
                                 }
 
@@ -445,38 +457,7 @@ namespace UTDScanner
                 }
 
                 #endregion
-
-                SQLiteConnection.ClearAllPools();
-                db.Close();
             }
-
-            // SQLiteConnectionHandle won't be released until GC collects it
-            // http://stackoverflow.com/a/8513453
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.WaitForFullGCComplete(1000 * 15);
-
-            #region Upload
-
-            ConnectionInfo connectionInfo = new PasswordConnectionInfo(Properties.Settings.Default.SCPHost, Properties.Settings.Default.SCPUsername, System.Text.Encoding.UTF8.GetBytes(Properties.Settings.Default.SCPPassword));
-
-            Console.WriteLine("Uploading to " + Properties.Settings.Default.SCPHost);
-
-            using (var scpClient = new ScpClient(connectionInfo))
-            {
-                scpClient.Connect();
-                scpClient.OperationTimeout = new TimeSpan(0, 5, 0);
-                scpClient.BufferSize = 2 ^ 20;
-
-                var database = new FileInfo(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "database.s3db"));
-
-                scpClient.Upload(database, Properties.Settings.Default.SCPDestination);
-
-                scpClient.Disconnect();
-            }
-
-            Console.WriteLine("Finished uploading");
-            #endregion
         }
     }
 }

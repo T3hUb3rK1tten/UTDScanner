@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Threading;
 
 
 namespace UTDScanner
@@ -9,18 +10,22 @@ namespace UTDScanner
 
         static void Main(string[] args)
         {
-            if (args.Count() > 0 && args[0].Equals("/all", StringComparison.CurrentCultureIgnoreCase))
-            {
-                Parser.Parse(true);
-            }
-            else if (args.Count() > 0 && args[0].Equals("/post", StringComparison.CurrentCultureIgnoreCase))
-            {
+            Console.WriteLine("Startup at " + DateTime.Now.ToString());
+            // On startup, process every file to double check
+            Parser.Parse(true);
 
-            }
-            else
+            while(true)
             {
-                Parser.Parse(false);
+                var timer = new System.Threading.Timer(new TimerCallback(t => {
+                    // Only process recent files
+                    Parser.Parse(false);
+                }));
+
+                timer.Change(new TimeSpan(0, 30, 0), new TimeSpan(0, 30, 0));
+
+                Thread.Sleep(Timeout.Infinite);
             }
+
         }
     }
 }
