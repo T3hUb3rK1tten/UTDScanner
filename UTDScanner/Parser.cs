@@ -405,7 +405,7 @@ namespace UTDScanner
                             const int httpsShortUrlLength = 21;
                             const int maxLength = 140 - httpsShortUrlLength - 1; // room for one space and an https t.co link
 
-                            string text = Convert.ToString(reader["Notes"]);
+                            string text = Convert.ToString(reader["Notes"]).TrimEnd('.', ',');
                             var ti = CultureInfo.CurrentCulture.TextInfo;
 
                             // Ending ) and space is added at end!
@@ -428,13 +428,13 @@ namespace UTDScanner
                                             text = newtext;
                                         }
                                     }
+                                    text = text.Trim() + ")";
                                 }
-                                text = text.Trim() + ")";
                             }
                             else
                             {
                                 // Notes were already too long
-                                text = text.Substring(0, maxLength - 3) + "...";
+                                text = text.Substring(0, maxLength - 1) + "…";
                             }
 
                             // Append url
