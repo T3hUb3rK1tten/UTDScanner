@@ -133,7 +133,7 @@ namespace UTDScanner
                     // Get the last modified date
                     using (var cmd = db.CreateCommand())
                     {
-                        cmd.CommandText = "SELECT Id, LastModified FROM Files WHERE Name = @Name";
+                        cmd.CommandText = "SELECT LastModified FROM Files WHERE Name = @Name";
                         cmd.Parameters.AddWithValue("@Name", filename);
 
                         var result = cmd.ExecuteScalar();
