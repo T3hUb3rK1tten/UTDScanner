@@ -466,6 +466,7 @@ namespace UTDScanner
                                     {
                                         using (var db2 = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
                                         {
+                                            db2.Open();
                                             using (var update = db2.CreateCommand())
                                             {
                                                 update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
@@ -481,7 +482,6 @@ namespace UTDScanner
                                     if (ex.Message.Contains("400"))
                                     {
                                         Console.WriteLine("Reached Buffer limit? " + ex.Message);
-                                        break;
                                     }
                                 }
 
