@@ -26,8 +26,6 @@ namespace UTDScanner
     {
         public static void Parse(bool checkAllFiles)
         {
-            #region Download
-
             Console.WriteLine("Checking local PDF files against server");
 
             var filenamestocheck = GetFilesToCheck(checkAllFiles);
@@ -41,37 +39,27 @@ namespace UTDScanner
 
             Console.WriteLine("Downloading finished, " + modifiedfiles.Count + " modified files to parse");
 
-            #endregion
-
-            if (modifiedfiles.Count == 0)
-            {
-                return;
-            }
-
-            #region Parse
-
-            Console.WriteLine("Parsing modified files");
-
             var incidents = new List<Incident>();
 
-            foreach (var file in modifiedfiles)
+            if (modifiedfiles.Count > 0)
             {
-                Console.WriteLine("Parsing " + file.Key);
+                Console.WriteLine("Parsing modified files");
+
+                foreach (var file in modifiedfiles)
+                {
+                    Console.WriteLine("Parsing " + file.Key);
                 
-                var blockBlob = container.GetBlockBlobReference(file.Key);
-                incidents.AddRange(ParseFile(blockBlob.OpenRead()));
+                    var blockBlob = container.GetBlockBlobReference(file.Key);
+                    incidents.AddRange(ParseFile(blockBlob.OpenRead()));
+                }
+
+                Console.WriteLine("Parsing finished, " + incidents.Count + " incidents to load");
             }
 
-            Console.WriteLine("Parsing finished, " + incidents.Count + " incidents to load");
-
-            #endregion
-
-            if (incidents.Count == 0)
+            if (incidents.Count > 0)
             {
-                return;
+                DatabaseUpload(incidents, modifiedfiles);
             }
-
-            DatabaseUpload(incidents, modifiedfiles);
 
             Post();
         }
