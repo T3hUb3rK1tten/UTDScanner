@@ -314,6 +314,12 @@ namespace UTDScanner
 
                         foreach (var incident in incidents)
                         {
+                            if (String.IsNullOrEmpty(incident.CaseNumber) && String.IsNullOrEmpty(incident.InternalReferenceNumber))
+                            {
+                                Console.WriteLine("Empty ID: " + incident.Notes);
+                                continue;
+                            }
+
                             insert.Parameters.Clear();
                             insert.Parameters.AddWithValue("@Type", (String.IsNullOrEmpty(incident.Type) ? (object)DBNull.Value : incident.Type));
                             insert.Parameters.AddWithValue("@Location", (String.IsNullOrEmpty(incident.Location) ? (object)DBNull.Value : incident.Location));
@@ -400,10 +406,11 @@ namespace UTDScanner
                 using (var getToShare = db.CreateCommand())
                 {
                     getToShare.CommandText = "SELECT TOP 10 Id, CaseNumber, InternalReferenceNumber, Type, Location, Reported, OccurredStart, OccurredStart, Disposition, Notes, Location, Latitude, Longitude, FacebookPageId " +
-                        "FROM IncidentsView WHERE SharedOnBuffer = 0 ORDER BY Reported ASC";
+                        "FROM IncidentsView WHERE SharedOnBuffer = 0 AND CaseNumber IS NOT NULL AND InternalReferenceNumber IS NOT NULL ORDER BY Reported ASC";
 
                     using (var reader = getToShare.ExecuteReader())
                     {
+                        var results = new List<Dictionary<string, string>>();
                         while (reader.Read())
                         {
                             // Time to tweet
@@ -469,12 +476,15 @@ namespace UTDScanner
                                     var json = Encoding.UTF8.GetString(response);
                                     if (Regex.IsMatch(json, @"success["" :]*true")) // lol
                                     {
-                                        using (var update = db.CreateCommand())
+                                        using (var db2 = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
                                         {
-                                            update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
-                                            update.Parameters.AddWithValue("id", reader["Id"]);
-                                            var rows = update.ExecuteNonQuery();
-                                            Debug.Assert(rows == 1);
+                                            using (var update = db2.CreateCommand())
+                                            {
+                                                update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
+                                                update.Parameters.AddWithValue("id", reader["Id"]);
+                                                var rows = update.ExecuteNonQuery();
+                                                Debug.Assert(rows == 1);
+                                            }
                                         }
                                     }
                                 }
