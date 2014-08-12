@@ -15,6 +15,9 @@ using System.Net;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.Data.SqlClient;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure;
+using Microsoft.WindowsAzure.Storage.Blob;
 
 
 namespace UTDScanner
@@ -27,9 +30,55 @@ namespace UTDScanner
 
             Console.WriteLine("Checking local PDF files against server");
 
-            var modifiedfiles = new List<String>();
+            var filenamestocheck = GetFilesToCheck(checkAllFiles);
+            
+            var storageAccount = CloudStorageAccount.Parse(CloudConfigurationManager.GetSetting("StorageConnectionString"));
+            var blobClient = storageAccount.CreateCloudBlobClient();
+            var container = blobClient.GetContainerReference("utdpolicepdf");
+            container.CreateIfNotExists();
 
-            var filenamestocheck = new List<String>();
+            var modifiedfiles = GetModifiedFiles(filenamestocheck, container);
+
+            Console.WriteLine("Downloading finished, " + modifiedfiles.Count + " modified files to parse");
+
+            #endregion
+
+            if (modifiedfiles.Count == 0)
+            {
+                return;
+            }
+
+            #region Parse
+
+            Console.WriteLine("Parsing modified files");
+
+            var incidents = new List<Incident>();
+
+            foreach (var file in modifiedfiles)
+            {
+                Console.WriteLine("Parsing " + file.Key);
+                
+                var blockBlob = container.GetBlockBlobReference(file.Key);
+                incidents.AddRange(ParseFile(blockBlob.OpenRead()));
+            }
+
+            Console.WriteLine("Parsing finished, " + incidents.Count + " incidents to load");
+
+            #endregion
+
+            if (incidents.Count == 0)
+            {
+                return;
+            }
+
+            DatabaseUpload(incidents, modifiedfiles);
+
+            Post();
+        }
+
+        private static List<string> GetFilesToCheck(bool checkAllFiles)
+        {
+            var filenamestocheck = new List<string>();
 
             // Try to get all files
             if (checkAllFiles)
@@ -66,300 +115,287 @@ namespace UTDScanner
                     filenamestocheck.Add(String.Format("{0}-{1:D2}.pdf", month.Year, month.Month)); // 2009-08.pdf
                 }
             }
+            return filenamestocheck;
+        }
 
-            foreach (var filename in filenamestocheck)
+        private static Dictionary<string, DateTime> GetModifiedFiles(List<string> filenamestocheck, CloudBlobContainer container)
+        {
+            var modifiedfiles = new Dictionary<string, DateTime>();
+
+            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
             {
-                var http = new HttpClient();
-                http.Request.Accept = "application/pdf";
-                http.StreamResponse = true;
+                db.Open();
 
-                var localfile = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), filename);
-                var uri = "https://www.utdallas.edu/police/files/" + filename;
-
-                try
+                foreach (var filename in filenamestocheck)
                 {
-                    if (File.Exists(localfile))
-                    {
-                        // Compare date of our file to date on server
-                        http.Request.IfModifiedSince = File.GetLastWriteTime(localfile);
-                    }
+                    DateTime lastmodified = DateTime.MinValue;
 
-                    var download = http.Get(uri);
-                    if (download.StatusCode == System.Net.HttpStatusCode.OK)
+                    // Get the last modified date
+                    using (var cmd = db.CreateCommand())
                     {
-                        Console.WriteLine("Downloading " + filename);
-                        using (var fs = new FileStream(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), localfile), FileMode.Create))
+                        cmd.CommandText = "SELECT Id, LastModified FROM Files WHERE Name = @Name";
+                        cmd.Parameters.AddWithValue("@Name", filename);
+
+                        var result = cmd.ExecuteScalar();
+                        if (result != null)
                         {
-                            download.ResponseStream.CopyTo(fs);
+                            lastmodified = (DateTime)result;
                         }
-                        modifiedfiles.Add(localfile);
+                    }
+
+                    var http = new HttpClient();
+                    http.Request.Accept = "application/pdf";
+                    http.StreamResponse = true;
+
+                    try
+                    {
+                        if (lastmodified != DateTime.MinValue)
+                        {
+                            // Compare date of our file to date on server
+                            http.Request.IfModifiedSince = lastmodified;
+                        }
+
+                        var download = http.Get("https://www.utdallas.edu/police/files/" + filename);
+                        if (download.StatusCode == System.Net.HttpStatusCode.OK)
+                        {
+                            Console.WriteLine("Downloading " + filename);
+                            var blockBlob = container.GetBlockBlobReference(filename);
+                            blockBlob.UploadFromStream(download.ResponseStream);
+
+                            modifiedfiles.Add(filename, download.LastModified);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(ex.ToString());
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine(ex.ToString());
-                    Debugger.Break();
-                }
-
             }
 
-            Console.WriteLine("Downloading finished, " + modifiedfiles.Count + " modified files to parse");
+            return modifiedfiles;
+        }
 
-            #endregion
+        private static List<Incident> ParseFile(Stream stream)
+        {
+            PdfReader reader = new PdfReader(stream);
 
-            if (modifiedfiles.Count == 0)
-            {
-                return;
-            }
-
-            #region Parse
-
-            Console.WriteLine("Parsing modified files");
-
-            var incidents = new List<Incident>();
+            List<Incident> incidents = new List<Incident>();
 
             var reportedline = new Regex("^Date/Time Reported: (.*) Incident Occurred Between: (.*?) and (.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             var caseline = new Regex("^Case #:(.*)Int. Ref. #:(.*)Disposition: (.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             var pageline = new Regex("^Page [0-9]+ of [0-9]+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-            foreach (var filename in modifiedfiles)
+            for (int page = 1; page <= reader.NumberOfPages; page++)
             {
-                PdfReader reader = new PdfReader(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), filename));
+                var strategy = new LocationTextExtractionStrategy();
+                var text = PdfTextExtractor.GetTextFromPage(reader, page, strategy);
+                var lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
-                Console.WriteLine("Parsing " + Path.GetFileName(filename) + " (" + reader.NumberOfPages + " pages)");
+                var currentIncident = new Incident();
 
-                for (int page = 1; page <= reader.NumberOfPages; page++)
+                bool started = false;
+                bool notes = false;
+                int unknownlines = 0;
+                foreach (var line in lines)
                 {
-                    var strategy = new LocationTextExtractionStrategy();
-                    var text = PdfTextExtractor.GetTextFromPage(reader, page, strategy);
-                    var lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-
-                    var currentIncident = new Incident();
-
-                    bool started = false;
-                    bool notes = false;
-                    int unknownlines = 0;
-                    foreach (var line in lines)
+                    // Wait until first Incident Type
+                    if (!started)
                     {
-                        // Wait until first Incident Type
-                        if (!started)
-                        {
-                            if (line.StartsWith("Incident Type: ", StringComparison.CurrentCultureIgnoreCase))
-                            {
-                                started = true;
-                            }
-                            else
-                            {
-                                continue;
-                            }
-                        }
-
                         if (line.StartsWith("Incident Type: ", StringComparison.CurrentCultureIgnoreCase))
                         {
-                            if (currentIncident.Type != null)
-                            {
-                                incidents.Add(currentIncident);
-                                currentIncident = new Incident();
-                            }
-                            currentIncident.Type = line.Substring("Incident Type: ".Length);
-                        }
-                        else if (line.StartsWith("Location: ", StringComparison.CurrentCultureIgnoreCase))
-                        {
-                            currentIncident.Location = line.Substring("Location: ".Length);
-                        }
-                        else if (line.StartsWith("Date/Time Reported: ", StringComparison.CurrentCultureIgnoreCase))
-                        {
-                            var match = reportedline.Match(line);
-
-                            try
-                            {
-                                currentIncident.Reported = Convert.ToDateTime(match.Groups[1].Value);
-                            }
-                            catch (FormatException)
-                            {
-                                currentIncident.Reported = DateTime.MinValue;
-                            }
-
-                            try
-                            {
-                                currentIncident.OccurredStart = Convert.ToDateTime(match.Groups[2].Value);
-                            }
-                            catch (FormatException)
-                            {
-                                currentIncident.OccurredStart = DateTime.MinValue;
-                            }
-
-                            try
-                            {
-                                currentIncident.OccurredStop = Convert.ToDateTime(match.Groups[3].Value);
-                            }
-                            catch (FormatException)
-                            {
-                                currentIncident.OccurredStart = DateTime.MinValue;
-                            }
-                        }
-                        else if (line.StartsWith("Case #: ", StringComparison.CurrentCultureIgnoreCase))
-                        {
-                            var match = caseline.Match(line);
-
-                            currentIncident.CaseNumber = match.Groups[1].Value.Trim();
-                            currentIncident.InternalReferenceNumber = match.Groups[2].Value.Trim();
-                            currentIncident.Disposition = match.Groups[3].Value.Trim();
-                        }
-                        else if (pageline.IsMatch(line))
-                        {
-                            notes = false;
-
-                            Debug.Assert(String.IsNullOrEmpty(currentIncident.Location) == false);
-
-                            incidents.Add(currentIncident);
-                        }
-                        else if (line.StartsWith("Notes: ", StringComparison.CurrentCultureIgnoreCase))
-                        {
-                            notes = true;
-                            currentIncident.Notes = line.Substring("Notes: ".Length);
-                        }
-                        else if (notes == true)
-                        {
-                            currentIncident.Notes += " " + line;
+                            started = true;
                         }
                         else
                         {
-                            Console.WriteLine("Unknown line: " + line);
-                            // Probably notes put in the Disposition field, one line is disposition, next is notes
-                            if (unknownlines == 0)
-                            {
-                                currentIncident.Disposition += " " + line;
-                                unknownlines++;
-                            }
-                            else
-                            {
-                                currentIncident.Notes += " " + line;
-                            }
-                            //Debugger.Break();
+                            continue;
+                        }
+                    }
+
+                    if (line.StartsWith("Incident Type: ", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        if (currentIncident.Type != null)
+                        {
+                            incidents.Add(currentIncident);
+                            currentIncident = new Incident();
+                        }
+                        currentIncident.Type = line.Substring("Incident Type: ".Length);
+                    }
+                    else if (line.StartsWith("Location: ", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        currentIncident.Location = line.Substring("Location: ".Length);
+                    }
+                    else if (line.StartsWith("Date/Time Reported: ", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        var match = reportedline.Match(line);
+
+                        try
+                        {
+                            currentIncident.Reported = Convert.ToDateTime(match.Groups[1].Value);
+                        }
+                        catch (FormatException)
+                        {
+                            currentIncident.Reported = DateTime.MinValue;
+                        }
+
+                        try
+                        {
+                            currentIncident.OccurredStart = Convert.ToDateTime(match.Groups[2].Value);
+                        }
+                        catch (FormatException)
+                        {
+                            currentIncident.OccurredStart = DateTime.MinValue;
+                        }
+
+                        try
+                        {
+                            currentIncident.OccurredStop = Convert.ToDateTime(match.Groups[3].Value);
+                        }
+                        catch (FormatException)
+                        {
+                            currentIncident.OccurredStart = DateTime.MinValue;
+                        }
+                    }
+                    else if (line.StartsWith("Case #: ", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        var match = caseline.Match(line);
+
+                        currentIncident.CaseNumber = match.Groups[1].Value.Trim();
+                        currentIncident.InternalReferenceNumber = match.Groups[2].Value.Trim();
+                        currentIncident.Disposition = match.Groups[3].Value.Trim();
+                    }
+                    else if (pageline.IsMatch(line))
+                    {
+                        notes = false;
+
+                        incidents.Add(currentIncident);
+                    }
+                    else if (line.StartsWith("Notes: ", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        notes = true;
+                        currentIncident.Notes = line.Substring("Notes: ".Length);
+                    }
+                    else if (notes == true)
+                    {
+                        currentIncident.Notes += " " + line;
+                    }
+                    else
+                    {
+                        Console.WriteLine("Unknown line: " + line);
+                        // Probably notes put in the Disposition field, one line is disposition, next is notes
+                        if (unknownlines == 0)
+                        {
+                            currentIncident.Disposition += " " + line;
+                            unknownlines++;
+                        }
+                        else
+                        {
+                            currentIncident.Notes += " " + line;
                         }
                     }
                 }
             }
 
-            Console.WriteLine("Parsing finished, " + incidents.Count + " incidents loaded");
+            return incidents;
+        }
 
-            #endregion
-
-            if (incidents.Count == 0)
-            {
-                return;
-            }
-
-            using (var db = new SqlConnection(Properties.Settings.Default.DefaultConnection))
+        private static void DatabaseUpload(List<Incident> incidents, Dictionary<string, DateTime> modifiedfiles)
+        {
+            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
             {
                 db.Open();
 
-                #region Store
-
-                if (incidents.Count != 0)
+                using (var trans = db.BeginTransaction())
                 {
-                    using (var trans = db.BeginTransaction())
+                    using (var insert = db.CreateCommand())
                     {
-                        var cmd = db.CreateCommand();
-                        cmd.Transaction = trans;
-                        cmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE CaseNumber = @casenumber AND InternalReferenceNumber = @internalreferencenumber";
-
-                        var insert = db.CreateCommand();
                         insert.Transaction = trans;
                         insert.CommandText = "INSERT INTO Incidents (Type, Location, Reported, OccurredStart, OccurredStop, CaseNumber, InternalReferenceNumber, Disposition, Notes)" +
                             "VALUES (@type, @location, @reported, @occurredstart, @occurredstop, @casenumber, @internalreferencenumber, @disposition, @notes);";
 
                         foreach (var incident in incidents)
                         {
-                            // This will cause a lot of table scans. Oh well.
-                            cmd.Parameters.Clear();
-                            cmd.Parameters.AddWithValue("@casenumber", incident.CaseNumber);
-                            cmd.Parameters.AddWithValue("@internalreferencenumber", incident.InternalReferenceNumber);
-                            int count = Convert.ToInt32(cmd.ExecuteScalar());
+                            insert.Parameters.Clear();
+                            insert.Parameters.AddWithValue("@Type", (String.IsNullOrEmpty(incident.Type) ? (object)DBNull.Value : incident.Type));
+                            insert.Parameters.AddWithValue("@Location", (String.IsNullOrEmpty(incident.Location) ? (object)DBNull.Value : incident.Location));
+                            insert.Parameters.AddWithValue("@Reported", (incident.Reported == DateTime.MinValue ? (object)DBNull.Value : incident.Reported));
+                            insert.Parameters.AddWithValue("@OccurredStart", (incident.OccurredStart == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStart));
+                            insert.Parameters.AddWithValue("@OccurredStop", (incident.OccurredStop == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStop));
+                            insert.Parameters.AddWithValue("@CaseNumber", (String.IsNullOrEmpty(incident.CaseNumber) ? (object)DBNull.Value : incident.CaseNumber));
+                            insert.Parameters.AddWithValue("@InternalReferenceNumber", (String.IsNullOrEmpty(incident.InternalReferenceNumber) ? (object)DBNull.Value : incident.InternalReferenceNumber));
+                            insert.Parameters.AddWithValue("@Disposition", (String.IsNullOrEmpty(incident.Disposition) ? (object)DBNull.Value : incident.Disposition));
+                            insert.Parameters.AddWithValue("@Notes", (String.IsNullOrEmpty(incident.Notes) ? (object)DBNull.Value : incident.Notes));
 
-                            if (count == 0)
+                            try
                             {
-                                Console.WriteLine("Inserting incident " + incident.CaseNumber + " " + incident.InternalReferenceNumber);
-
-                                // Insert
-                                insert.Parameters.Clear();
-                                insert.Parameters.AddWithValue("@Type", incident.Type);
-                                insert.Parameters.AddWithValue("@Location", (String.IsNullOrEmpty(incident.Location) ? (object)DBNull.Value : incident.Location));
-                                insert.Parameters.AddWithValue("@Reported", (incident.Reported == DateTime.MinValue ? (object)DBNull.Value : incident.Reported));
-                                insert.Parameters.AddWithValue("@OccurredStart", (incident.OccurredStart == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStart));
-                                insert.Parameters.AddWithValue("@OccurredStop", (incident.OccurredStop == DateTime.MinValue ? (object)DBNull.Value : incident.OccurredStop));
-                                insert.Parameters.AddWithValue("@CaseNumber", incident.CaseNumber);
-                                insert.Parameters.AddWithValue("@InternalReferenceNumber", incident.InternalReferenceNumber);
-                                insert.Parameters.AddWithValue("@Disposition", incident.Disposition);
-                                insert.Parameters.AddWithValue("@Notes", incident.Notes);
-
                                 int rows = insert.ExecuteNonQuery();
-                                Debug.Assert(rows == 1);
+                                if (rows == 1)
+                                {
+                                    Console.WriteLine("Inserted incident " + incident.CaseNumber + " " + incident.InternalReferenceNumber);
+                                }
+                            }
+                            catch (SqlException ex)
+                            {
+                                if (ex.Number == 2601) // Duplicate key row (this is okay)
+                                {
+                                    Debug.WriteLine("Duplicate key " + ex.Message);
+                                }
+                                else
+                                {
+                                    throw ex;
+                                }
                             }
                         }
-
-                        cmd.Dispose();
-                        insert.Dispose();
                     }
-                }
 
-                using (var numSentStatusesCmd = db.CreateCommand())
-                {
-                    numSentStatusesCmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE SharedOnBuffer = 1";
-                    int numSentStatuses = Convert.ToInt32(numSentStatusesCmd.ExecuteScalar());
-                    if (numSentStatuses == 0)
+                    // Keep this in the same transaction because this is how we tell what we've worked on
+                    foreach (var file in modifiedfiles)
                     {
-                        // Probably a freshly loaded database
-                        // Avoid sending thousands of tweets for old incidents
-                        Console.WriteLine("Setting SharedOnBuffer = 1 for all Incidents");
-                        using (var update = db.CreateCommand())
+                        using (var upsert = db.CreateCommand())
                         {
-                            update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1";
-                            update.ExecuteNonQuery();
+                            upsert.Transaction = trans;
+                            upsert.CommandText = "MERGE INTO Files USING (SELECT @Name AS Name) AS SRC ON Files.Name = SRC.Name " +
+                                "WHEN MATCHED THEN UPDATE SET LastModified = @LastModified " +
+                                "WHEN NOT MATCHED THEN INSERT (Name, LastModified) VALUES (@Name, @LastModified);";
+
+                            upsert.Parameters.AddWithValue("@Name", file.Key);
+                            upsert.Parameters.AddWithValue("@LastModified", file.Value);
+
+                            var rows = upsert.ExecuteNonQuery();
+                            Debug.Assert(rows == 1);
                         }
                     }
-                }
 
-                Console.WriteLine("Finished storing incidents");
-                #endregion
-
-                #region Files table
-
-                foreach (var filename in modifiedfiles)
-                {
-                    var localfile = new FileInfo(filename);
-                    var exists = false;
-
-                    using (var cmd = db.CreateCommand())
+                    // Might as well do this now too
+                    using (var numSentStatusesCmd = db.CreateCommand())
                     {
-                        cmd.CommandText = "SELECT COUNT(1) FROM Files WHERE Name = @name";
-                        cmd.Parameters.AddWithValue("name", localfile.Name);
+                        numSentStatusesCmd.Transaction = trans;
+                        numSentStatusesCmd.CommandText = "SELECT COUNT(1) FROM Incidents WHERE SharedOnBuffer = 1";
+                        int numSentStatuses = Convert.ToInt32(numSentStatusesCmd.ExecuteScalar());
 
-                        exists = Convert.ToBoolean(cmd.ExecuteScalar());
+                        if (numSentStatuses == 0)
+                        {
+                            // Probably a freshly loaded database
+                            // Avoid sending thousands of tweets for old incidents
+                            Console.WriteLine("Setting SharedOnBuffer = 1 for all Incidents");
+                            using (var update = db.CreateCommand())
+                            {
+                                update.Transaction = trans;
+                                update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1";
+                                update.ExecuteNonQuery();
+                            }
+                        }
                     }
 
-                    using (var cmd = db.CreateCommand())
-                    {
-                        if (exists)
-                        {
-                            cmd.CommandText = "UPDATE FILES SET Name = @name, LastModified = @lastmodified WHERE Name = @name";
-                        }
-                        else
-                        {
-                            cmd.CommandText = "INSERT INTO Files (Name, LastModified) VALUES (@name, @lastmodified)";
-                        }
-                        cmd.Parameters.AddWithValue("name", filename);
-                        cmd.Parameters.AddWithValue("lastmodified", localfile.LastWriteTime);
-
-                        var rows = cmd.ExecuteNonQuery();
-                        Debug.Assert(rows == 1);
-                    }
+                    trans.Commit();
                 }
+            }
+        }
 
-                #endregion
-
-                #region Post
+        private static void Post()
+        {
+            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            {
+                db.Open();
 
                 using (var getToShare = db.CreateCommand())
                 {
@@ -421,10 +457,10 @@ namespace UTDScanner
                             {
                                 var data = new NameValueCollection();
                                 data["text"] = text;
-                                data["profile_ids[]"] = Properties.Settings.Default.BufferTwitterId;
+                                data["profile_ids[]"] = CloudConfigurationManager.GetSetting("BufferTwitterId");
                                 data["shorten"] = "false";
 
-                                web.Headers.Add("Authorization", "Bearer " + Properties.Settings.Default.OAuthAccessToken);
+                                web.Headers.Add("Authorization", "Bearer " + CloudConfigurationManager.GetSetting("OAuthAccessToken"));
                                 web.Headers.Add("Content-Type", "application/x-www-form-urlencoded");
                                 web.Headers.Add("User-Agent", "UTDScanner/1.0 (+http://utdscanner.com)");
                                 try
@@ -455,8 +491,6 @@ namespace UTDScanner
                         }
                     }
                 }
-
-                #endregion
             }
         }
     }
