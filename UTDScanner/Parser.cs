@@ -394,7 +394,7 @@ namespace UTDScanner
                 using (var getToShare = db.CreateCommand())
                 {
                     getToShare.CommandText = "SELECT TOP 10 Id, CaseNumber, InternalReferenceNumber, Type, Location, Reported, OccurredStart, OccurredStart, Disposition, Notes, Location, Latitude, Longitude, FacebookPageId " +
-                        "FROM IncidentsView WHERE SharedOnBuffer = 0 AND CaseNumber IS NOT NULL AND InternalReferenceNumber IS NOT NULL ORDER BY Reported ASC";
+                        "FROM IncidentsView WHERE SharedOnBuffer = 0 AND (CaseNumber IS NOT NULL OR InternalReferenceNumber IS NOT NULL) ORDER BY Reported ASC";
 
                     using (var reader = getToShare.ExecuteReader())
                     {
