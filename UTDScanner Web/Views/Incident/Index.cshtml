@@ -1,0 +1,38 @@
+﻿@inherits Nancy.ViewEngines.Razor.NancyRazorViewBase<List<UTDScanner_Web.Models.IncidentModel>>
+@{
+    Layout = "Views/Base.cshtml";
+    ViewBag.Title = "Incidents - UTD Scanner";
+}
+<div class="container">
+    <h1>Incidents</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Case Number</th>
+                <th>Type</th>
+                <th>Location</th>
+                <th>Reported</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Pagination is for the weak -->
+            @foreach (var incident in Model)
+            {
+                <tr>
+                    <td>
+                        <a href="~/case/@incident.CaseNumber">@incident.CaseNumber</a>
+                    </td>
+                    <td>
+                        @incident.Type
+                    </td>
+                    <td>
+                        @incident.Location
+                    </td>
+                    <td>
+                        @incident.Reported
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

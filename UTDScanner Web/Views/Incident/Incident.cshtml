@@ -1,0 +1,46 @@
+﻿@inherits Nancy.ViewEngines.Razor.NancyRazorViewBase<UTDScanner_Web.Models.IncidentModel>
+@{
+    Layout = "Views/Base.cshtml";
+    ViewBag.Title = "Incident - UTD Scanner";
+}
+<div class="container">
+    <h1>@Model.CaseNumber @Model.InternalReferenceNumber</h1>
+    <table>
+        <tr>
+            <td>Type</td>
+            <td>@Model.Type</td>
+        </tr>
+        <tr>
+            <td>Reported</td>
+            <td>@Model.Reported</td>
+        </tr>
+        <tr>
+            <td>Occurred Start</td>
+            <td>@Model.OccurredStart</td>
+        </tr>
+        <tr>
+            <td>Occurred Stop</td>
+            <td>@Model.OccurredStop</td>
+        </tr>
+        <tr>
+            <td>Disposition</td>
+            <td>@Model.Disposition</td>
+        </tr>
+        <tr>
+            <td>Location</td>
+            <td>@Model.Location</td>
+        </tr>
+        <tr>
+            <td>Notes</td>
+            <td>@Model.Notes</td>
+        </tr>
+    </table>
+    @if (!String.IsNullOrEmpty(Model.Latitude) && !String.IsNullOrEmpty(Model.Longitude))
+    { 
+        <h3>Approximate Location</h3>
+        <iframe width="600"
+                height="450"
+                frameborder="0" style="border:0"
+                src="https://www.google.com/maps/embed/v1/view?key=AIzaSyBHyE5HKTww5t5F-F-5kI7uHwXTCvBfJ7w&center=@Model.Latitude,@Model.Longitude&zoom=19&maptype=satellite"></iframe>
+    }
+</div>
