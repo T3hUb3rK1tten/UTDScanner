@@ -16,6 +16,10 @@ namespace UTDScanner_Web
             nancyConventions.StaticContentsConventions.Add(
                 StaticContentConventionBuilder.AddFile("/robots.txt", "/Content/robots.txt")
             );
+
+            nancyConventions.StaticContentsConventions.Add(
+                StaticContentConventionBuilder.AddDirectory("static", @"/Content/")
+            );
         }
     }
 }
