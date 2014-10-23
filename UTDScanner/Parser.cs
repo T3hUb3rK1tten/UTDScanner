@@ -398,98 +398,136 @@ namespace UTDScanner
 
                     using (var reader = getToShare.ExecuteReader())
                     {
-                        var results = new List<Dictionary<string, string>>();
                         while (reader.Read())
                         {
-                            // Time to tweet
-                            const int httpsShortUrlLength = 21;
-                            const int maxLength = 140 - httpsShortUrlLength - 1; // room for one space and an https t.co link
-
-                            string text = Convert.ToString(reader["Notes"]).TrimEnd('.', ',');
-                            var ti = CultureInfo.CurrentCulture.TextInfo;
-
-                            // Ending ) and space is added at end!
-                            if (text.Length <= maxLength)
-                            {
-                                string newtext = text + " (" + ti.ToTitleCase(Convert.ToString(reader["Location"]).ToLower());
-
-                                if (newtext.Length + 1 <= maxLength) // +1 accounts for ending )
-                                {
-                                    text = newtext;
-                                    newtext = text + " " + Convert.ToDateTime(reader["Reported"]).ToString(@"M/d h:mmt");
-
-                                    if (newtext.Length + 1 <= maxLength)
-                                    {
-                                        text = newtext;
-                                        newtext = text + " " + ti.ToTitleCase(Convert.ToString(reader["Disposition"]).ToLower());
-
-                                        if (newtext.Length + 1 <= maxLength)
-                                        {
-                                            text = newtext;
-                                        }
-                                    }
-                                    text = text.Trim() + ")";
-                                }
-                            }
-                            else
-                            {
-                                // Notes were already too long
-                                text = text.Substring(0, maxLength - 1) + "…";
-                            }
-
-                            // Append url
+                            var url = "";
                             if (reader["CaseNumber"] != DBNull.Value)
                             {
-                                text = text + " http://utdscanner.com/case/" + Convert.ToString(reader["CaseNumber"]);
+                                url = "http://utdscanner.com/case/" + Convert.ToString(reader["CaseNumber"]);
                             }
                             else
                             {
                                 Debug.Fail("No casenumber for row", reader.ToString());
                             }
 
+                            var tweet = Tweetify(reader, url);
+                            var status = Facebookify(reader);
 
-                            using (var web = new WebClient())
+                            var tweetresult = BufferPost(CloudConfigurationManager.GetSetting("BufferTwitterId"), tweet);
+                            var statusresult = BufferPost(CloudConfigurationManager.GetSetting("BufferFacebookId"), status, url);
+
+                            if (tweetresult || statusresult)
+                                // If only one of the Twitter or Facebook queues are full (not sure why?) this could result in duplicate updates
+                                // If one does, we hope both did, because the alternative is messy
                             {
-                                var data = new NameValueCollection();
-                                data["text"] = text;
-                                data["profile_ids[]"] = CloudConfigurationManager.GetSetting("BufferTwitterId");
-                                data["shorten"] = "false";
-
-                                web.Headers.Add("Authorization", "Bearer " + CloudConfigurationManager.GetSetting("OAuthAccessToken"));
-                                web.Headers.Add("Content-Type", "application/x-www-form-urlencoded");
-                                web.Headers.Add("User-Agent", "UTDScanner/1.0 (+http://utdscanner.com)");
-                                try
+                                using (var db2 = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
                                 {
-                                    var response = web.UploadValues("https://api.bufferapp.com/1/updates/create.json", "POST", data);
-                                    var json = Encoding.UTF8.GetString(response);
-                                    if (Regex.IsMatch(json, @"success["" :]*true")) // lol
+                                    db2.Open();
+                                    using (var update = db2.CreateCommand())
                                     {
-                                        using (var db2 = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
-                                        {
-                                            db2.Open();
-                                            using (var update = db2.CreateCommand())
-                                            {
-                                                update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
-                                                update.Parameters.AddWithValue("id", reader["Id"]);
-                                                var rows = update.ExecuteNonQuery();
-                                                Debug.Assert(rows == 1);
-                                            }
-                                        }
+                                        update.CommandText = "UPDATE Incidents SET SharedOnBuffer = 1 WHERE Id = @id";
+                                        update.Parameters.AddWithValue("id", reader["Id"]);
+                                        var rows = update.ExecuteNonQuery();
+                                        Debug.Assert(rows == 1);
                                     }
                                 }
-                                catch (WebException ex)
-                                {
-                                    if (ex.Message.Contains("400"))
-                                    {
-                                        Console.WriteLine("Reached Buffer limit? " + ex.Message);
-                                    }
-                                }
-
                             }
                         }
                     }
                 }
             }
+        }
+
+        private static string Tweetify(SqlDataReader reader, string url)
+        {
+            // Time to tweet
+            const int httpsShortUrlLength = 21;
+            const int maxLength = 140 - httpsShortUrlLength - 1; // room for one space and an https t.co link
+
+            string tweet = Convert.ToString(reader["Notes"]).TrimEnd('.', ',');
+            var ti = CultureInfo.CurrentCulture.TextInfo;
+
+            // Ending ) and space is added at end!
+            if (tweet.Length <= maxLength)
+            {
+                string newtext = tweet + " (" + ti.ToTitleCase(Convert.ToString(reader["Location"]).ToLower());
+
+                if (newtext.Length + 1 <= maxLength) // +1 accounts for ending )
+                {
+                    tweet = newtext;
+                    newtext = tweet + " " + Convert.ToDateTime(reader["Reported"]).ToString(@"M/d h:mmt");
+
+                    if (newtext.Length + 1 <= maxLength)
+                    {
+                        tweet = newtext;
+                        newtext = tweet + " " + ti.ToTitleCase(Convert.ToString(reader["Disposition"]).ToLower());
+
+                        if (newtext.Length + 1 <= maxLength)
+                        {
+                            tweet = newtext;
+                        }
+                    }
+                    tweet = tweet.Trim() + ")";
+                }
+            }
+            else
+            {
+                // Notes were already too long
+                tweet = tweet.Substring(0, maxLength - 1) + "…";
+            }
+
+            // Append url
+            tweet = tweet + " " + url;
+
+            return tweet;
+        }
+
+        private static string Facebookify(SqlDataReader reader)
+        {
+            string status = Convert.ToString(reader["Notes"]).TrimEnd('.', ',');
+            var ti = CultureInfo.CurrentCulture.TextInfo;
+
+            status = status + " (" + ti.ToTitleCase(Convert.ToString(reader["Location"]).ToLower());
+            status = status + " " + Convert.ToDateTime(reader["Reported"]).ToString(@"M/d h:mmt");
+            status = status.Trim() + ")";
+
+            return status;
+        }
+
+        private static bool BufferPost(string profileId, string text, string url = null)
+        {
+            using (var web = new WebClient())
+            {
+                var data = new NameValueCollection();
+                data["text"] = text;
+                data["profile_ids[]"] = profileId;
+                data["shorten"] = "false";
+                if (url != null)
+                {
+                    data["media[link]"] = url;
+                }
+
+                web.Headers.Add("Authorization", "Bearer " + CloudConfigurationManager.GetSetting("OAuthAccessToken"));
+                web.Headers.Add("Content-Type", "application/x-www-form-urlencoded");
+                web.Headers.Add("User-Agent", "UTDScanner/1.0 (+http://utdscanner.com)");
+                try
+                {
+                    var response = web.UploadValues("https://api.bufferapp.com/1/updates/create.json", "POST", data);
+                    var json = Encoding.UTF8.GetString(response);
+                    if (Regex.IsMatch(json, @"success["" :]*true")) // lol
+                    {
+                        return true;
+                    }
+                }
+                catch (WebException ex)
+                {
+                    if (ex.Message.Contains("400"))
+                    {
+                        Console.WriteLine("Reached Buffer limit? " + ex.Message);
+                    }
+                }
+            }
+            return false;
         }
     }
 }
