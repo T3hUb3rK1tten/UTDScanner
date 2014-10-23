@@ -1,8 +1,15 @@
 ﻿@inherits Nancy.ViewEngines.Razor.NancyRazorViewBase<UTDScanner_Web.Models.IncidentModel>
 @{
     Layout = "Views/Base.cshtml";
-    ViewBag.Title = "Incident - UTD Scanner";
+    var ti = System.Globalization.CultureInfo.CurrentCulture.TextInfo;
+    ViewBag.Title = "Incident " + @Model.CaseNumber + " - " + ti.ToTitleCase(Model.Type) + " - UTD Scanner";
 }
+@section ExtraHeaders {
+    <meta property="og:title" content="@ViewBag.Title" />
+    <meta property="og:description" content="@Model.Notes" />
+    <meta property="og:url" content="http://utdscanner.com/case/@Model.CaseNumber" />
+}
+
 <div class="container">
     <h1>@Model.CaseNumber @Model.InternalReferenceNumber</h1>
     <table>
