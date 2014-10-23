@@ -5,12 +5,13 @@
     ViewBag.Title = "Incident " + @Model.CaseNumber + " - " + ti.ToTitleCase(Model.Type) + " - UTD Scanner";
 }
 @section ExtraHeaders {
-    <meta property="og:title" content="@ViewBag.Title" />
-    <meta property="og:description" content="@Model.Notes" />
-    <meta property="og:url" content="http://utdscanner.com/case/@Model.CaseNumber" />
+    @* Remove these when we update Nancy to include https://github.com/NancyFx/Nancy/pull/1545 !*@
+    <meta property="og:title" content="@Nancy.Helpers.HttpUtility.HtmlEncode(@ViewBag.Title)" />
+    <meta property="og:description" content="@Nancy.Helpers.HttpUtility.HtmlEncode(@Model.Notes)" />
+    <meta property="og:url" content="@Nancy.Helpers.HttpUtility.HtmlEncode("http://utdscanner.com/case/" + @Model.CaseNumber)" />
 }
 
-<div class="container">
+><div class="container">
     <h1>@Model.CaseNumber @Model.InternalReferenceNumber</h1>
     <table>
         <tr>
