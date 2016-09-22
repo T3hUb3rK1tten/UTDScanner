@@ -170,6 +170,8 @@ namespace UTDScanner
             var caseline = new Regex("^Case #:(.*)Int. Ref. #:(.*)Disposition: (.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             var pageline = new Regex("^Page [0-9]+ of [0-9]+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+            bool outoforderfile = false; // so far only 2010-crime-log.pdf has this problem
+
             for (int page = 1; page <= reader.NumberOfPages; page++)
             {
                 var strategy = new LocationTextExtractionStrategy();
@@ -180,6 +182,7 @@ namespace UTDScanner
 
                 bool started = false;
                 bool notes = false;
+                bool endofpage = false;
                 int unknownlines = 0;
                 foreach (var line in lines)
                 {
@@ -198,6 +201,7 @@ namespace UTDScanner
 
                     if (line.StartsWith("Incident Type: ", StringComparison.CurrentCultureIgnoreCase))
                     {
+                        notes = false;
                         if (currentIncident.Type != null)
                         {
                             incidents.Add(currentIncident);
@@ -251,13 +255,14 @@ namespace UTDScanner
                     else if (pageline.IsMatch(line))
                     {
                         notes = false;
+                        endofpage = true;
 
                         incidents.Add(currentIncident);
                     }
                     else if (line.StartsWith("Notes: ", StringComparison.CurrentCultureIgnoreCase))
                     {
                         notes = true;
-                        currentIncident.Notes = line.Substring("Notes: ".Length);
+                        currentIncident.Notes = line.Substring("Notes: ".Length).Trim();
                     }
                     else if (notes == true)
                     {
@@ -265,16 +270,44 @@ namespace UTDScanner
                     }
                     else
                     {
-                        Console.WriteLine("Unknown line: " + line);
-                        // Probably notes put in the Disposition field, one line is disposition, next is notes
-                        if (unknownlines == 0)
+                        if (!outoforderfile && line.StartsWith("Location:", StringComparison.CurrentCultureIgnoreCase))
                         {
-                            currentIncident.Disposition += " " + line;
-                            unknownlines++;
+                            // For out of order file, all we can do is add notes
+                            Console.WriteLine("Out of order file detected");
+                            outoforderfile = true;
                         }
-                        else
+
+                        if (outoforderfile)
                         {
                             currentIncident.Notes += " " + line;
+                        }
+                        else if (!endofpage)
+                        {
+                            // Really long locations wrap to next line
+                            // Some locations print before the "Location:" line though
+                           
+                            if (currentIncident.Reported == DateTime.MinValue)
+                            {
+                                Console.WriteLine("Location extra wrapped line: " + line);
+                                currentIncident.Location += line;
+                            }
+                            else
+                            {
+                                if (notes)
+                                {
+                                    Console.WriteLine("Unknown line: " + line);
+                                    // Probably notes put in the Disposition field, one line is disposition, next is notes
+                                    if (unknownlines == 0)
+                                    {
+                                        currentIncident.Disposition += " " + line;
+                                        unknownlines++;
+                                    }
+                                    else
+                                    {
+                                        currentIncident.Notes += " " + line;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -485,7 +518,10 @@ namespace UTDScanner
             var ti = CultureInfo.CurrentCulture.TextInfo;
 
             status = status + " (" + ti.ToTitleCase(Convert.ToString(reader["Location"]).ToLower());
-            status = status + " " + Convert.ToDateTime(reader["Reported"]).ToString(@"M/d h:mmt");
+            if (reader["Reported"] != DBNull.Value)
+            {
+                status = status + " " + Convert.ToDateTime(reader["Reported"]).ToString(@"M/d h:mmt");
+            }
             status = status.Trim() + ")";
 
             return status;
