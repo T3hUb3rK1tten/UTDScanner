@@ -1,5 +1,0 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<!--Don't delete this file. It is used for publishing Windows Azure WebJobs.-->
-<WebJobs>
-  <WebJob Project="UTDScanner" RelativePath="..\UTDScanner\UTDScanner.csproj" Schedule="continuous" />
-</WebJobs>

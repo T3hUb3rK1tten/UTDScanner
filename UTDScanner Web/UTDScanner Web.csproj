@@ -72,7 +72,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Content\styles.css" />
-    <Content Include="Properties\WebJobs.xml" />
     <Content Include="Content\robots.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -87,8 +86,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="packages.config" />
-    <Content Include="Properties\ligershark.webjobs.targets" />
-    <Content Include="Properties\ligershark.webjobs.ext.targets" />
     <Content Include="Views\Home\Index.cshtml" />
     <Content Include="Views\Base.cshtml" />
     <Content Include="Views\Incident\Incident.cshtml" />
@@ -100,7 +97,6 @@
     <None Include="Web.Release.config">
       <DependentUpon>Web.config</DependentUpon>
     </None>
-    <Content Include="webjobs.wpp.targets" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\UTDScanner\UTDScanner.csproj">

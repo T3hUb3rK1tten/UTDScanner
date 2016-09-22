@@ -15,10 +15,7 @@ using System.Net;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.Data.SqlClient;
-using Microsoft.WindowsAzure.Storage;
-using Microsoft.WindowsAzure;
-using Microsoft.WindowsAzure.Storage.Blob;
-
+using System.Configuration;
 
 namespace UTDScanner
 {
@@ -29,13 +26,10 @@ namespace UTDScanner
             Console.WriteLine("Checking local PDF files against server");
 
             var filenamestocheck = GetFilesToCheck(checkAllFiles);
-            
-            var storageAccount = CloudStorageAccount.Parse(CloudConfigurationManager.GetSetting("StorageConnectionString"));
-            var blobClient = storageAccount.CreateCloudBlobClient();
-            var container = blobClient.GetContainerReference("utdpolicepdf");
-            container.CreateIfNotExists();
 
-            var modifiedfiles = GetModifiedFiles(filenamestocheck, container);
+            var directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+            var modifiedfiles = GetModifiedFiles(filenamestocheck, directory);
 
             Console.WriteLine("Downloading finished, " + modifiedfiles.Count + " modified files to parse");
 
@@ -48,9 +42,11 @@ namespace UTDScanner
                 foreach (var file in modifiedfiles)
                 {
                     Console.WriteLine("Parsing " + file.Key);
-                
-                    var blockBlob = container.GetBlockBlobReference(file.Key);
-                    incidents.AddRange(ParseFile(blockBlob.OpenRead()));
+
+                    using (var stream = File.OpenRead(Path.Combine(directory, file.Key)))
+                    {
+                        incidents.AddRange(ParseFile(stream));
+                    }
                 }
 
                 Console.WriteLine("Parsing finished, " + incidents.Count + " incidents to load");
@@ -106,11 +102,11 @@ namespace UTDScanner
             return filenamestocheck;
         }
 
-        private static Dictionary<string, DateTime> GetModifiedFiles(List<string> filenamestocheck, CloudBlobContainer container)
+        private static Dictionary<string, DateTime> GetModifiedFiles(List<string> filenamestocheck, string directory)
         {
             var modifiedfiles = new Dictionary<string, DateTime>();
 
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
 
@@ -144,12 +140,13 @@ namespace UTDScanner
                         }
 
                         var download = http.Get("https://www.utdallas.edu/police/files/" + filename);
-                        if (download.StatusCode == System.Net.HttpStatusCode.OK)
+                        if (download.StatusCode == HttpStatusCode.OK)
                         {
                             Console.WriteLine("Downloading " + filename);
-                            var blockBlob = container.GetBlockBlobReference(filename);
-                            blockBlob.UploadFromStream(download.ResponseStream);
-
+                            using (var file = File.Create(Path.Combine(directory, filename)))
+                            {
+                                download.ResponseStream.CopyTo(file);
+                            }
                             modifiedfiles.Add(filename, download.LastModified);
                         }
                     }
@@ -288,7 +285,7 @@ namespace UTDScanner
 
         private static void DatabaseUpload(List<Incident> incidents, Dictionary<string, DateTime> modifiedfiles)
         {
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
 
@@ -387,7 +384,7 @@ namespace UTDScanner
 
         private static void Post()
         {
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
 
@@ -413,14 +410,14 @@ namespace UTDScanner
                             var tweet = Tweetify(reader, url);
                             var status = Facebookify(reader);
 
-                            var tweetresult = BufferPost(CloudConfigurationManager.GetSetting("BufferTwitterId"), tweet);
-                            var statusresult = BufferPost(CloudConfigurationManager.GetSetting("BufferFacebookId"), status, url);
+                            var tweetresult = BufferPost(ConfigurationManager.AppSettings["BufferTwitterId"], tweet);
+                            var statusresult = BufferPost(ConfigurationManager.AppSettings["BufferFacebookId"], status, url);
 
                             if (tweetresult || statusresult)
                                 // If only one of the Twitter or Facebook queues are full (not sure why?) this could result in duplicate updates
                                 // If one does, we hope both did, because the alternative is messy
                             {
-                                using (var db2 = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+                                using (var db2 = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
                                 {
                                     db2.Open();
                                     using (var update = db2.CreateCommand())
@@ -507,7 +504,7 @@ namespace UTDScanner
                     data["media[link]"] = url;
                 }
 
-                web.Headers.Add("Authorization", "Bearer " + CloudConfigurationManager.GetSetting("OAuthAccessToken"));
+                web.Headers.Add("Authorization", "Bearer " + ConfigurationManager.AppSettings["OAuthAccessToken"]);
                 web.Headers.Add("Content-Type", "application/x-www-form-urlencoded");
                 web.Headers.Add("User-Agent", "UTDScanner/1.0 (+http://utdscanner.com)");
                 try
