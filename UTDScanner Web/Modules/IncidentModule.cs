@@ -1,7 +1,7 @@
-﻿using Microsoft.WindowsAzure;
-using Nancy;
+﻿using Nancy;
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Web;
@@ -21,7 +21,7 @@ namespace UTDScanner_Web.Modules
         public dynamic Index(dynamic _)
         {
             var incidents = new List<IncidentModel>();
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
                 using (var cmd = db.CreateCommand())
@@ -39,7 +39,7 @@ namespace UTDScanner_Web.Modules
 
         public dynamic ByCaseNumber(dynamic _)
         {
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
                 using (var cmd = db.CreateCommand())
@@ -61,7 +61,7 @@ namespace UTDScanner_Web.Modules
 
         public dynamic ByInternalReferenceNumber(dynamic _)
         {
-            using (var db = new SqlConnection(CloudConfigurationManager.GetSetting("DatabaseConnectionString")))
+            using (var db = new SqlConnection(ConfigurationManager.AppSettings["DatabaseConnectionString"]))
             {
                 db.Open();
                 using (var cmd = db.CreateCommand())
